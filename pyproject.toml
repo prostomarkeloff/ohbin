@@ -1,0 +1,49 @@
+[project]
+name = "ohbin"
+version = "0.1.0"
+description = "Declarative GitHub-release binaries for uv projects — declare a tool in pyproject, `ohbin run <tool>` downloads, SHA256-verifies, caches, and execs it. POSIX only (uses flock)."
+readme = "README.md"
+authors = [
+    { name = "prostomarkeloff", email = "prostomarkeloff@ohreally.me" }
+]
+requires-python = ">=3.11"
+# Hot path (`run` / `ensure`) is pure stdlib. tomlkit is only imported by `add`,
+# which edits pyproject.toml and must preserve its comments/formatting.
+dependencies = [
+    "tomlkit>=0.13",
+]
+
+[project.scripts]
+ohbin = "ohbin.cli:main"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.409",
+    "pytest>=8.0",
+    "ruff>=0.15.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.1,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Conservative ruleset: errors/warnings, pyflakes, isort, bugbear, pyupgrade,
+# naming, comprehensions, simplify, ruff-specific.
+select = ["E", "F", "W", "I", "B", "UP", "N", "C4", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally reach into `_*`-prefixed internals.
+"tests/*" = ["SLF001"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportUnusedImport = true

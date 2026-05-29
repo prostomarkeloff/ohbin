@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint runs once (single OS / single Python) — code style is platform-agnostic.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install Python 3.11
+        run: uv python install 3.11
+      - name: Sync dev deps
+        run: uv sync --frozen --group dev
+      - name: Run lint-heavy (check-only)
+        run: make lint-heavy LINT_HEAVY_CI=1
+
+  # Tests run on the full matrix: Linux + macOS run the real suite. Windows is in
+  # the matrix as a placeholder (future work — ohbin's engine imports POSIX-only
+  # `fcntl` for the install flock, so the package fails on import on Windows). The
+  # test step is replaced with a no-op warning annotation so the job stays GREEN.
+  # When someone ports the lock, swap the Windows step back to `make test-full`.
+  test:
+    name: test (${{ matrix.os }} / py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+      - name: Sync deps (pinned Python)
+        if: matrix.os != 'windows-latest'
+        run: uv sync --frozen --python ${{ matrix.python }}
+      - name: Run test-full
+        if: matrix.os != 'windows-latest'
+        run: make test-full
+        shell: bash
+      - name: Skip on Windows (POSIX-only — future work)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "::warning::ohbin is POSIX-only (imports fcntl for the install flock). Windows support is future work — this job is a placeholder so the matrix surface stays visible."
+        shell: bash
