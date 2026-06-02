@@ -1,6 +1,6 @@
 [project]
 name = "ohbin"
-version = "0.1.0"
+version = "0.1.1"
 description = "Declarative GitHub-release binaries for uv projects — declare a tool in pyproject, `ohbin run <tool>` downloads, SHA256-verifies, caches, and execs it. POSIX only (uses flock)."
 readme = "README.md"
 authors = [

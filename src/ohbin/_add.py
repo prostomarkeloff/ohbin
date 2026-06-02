@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ohbin._engine import sha256_of_url
 from ohbin._github import Asset, fetch_release
@@ -15,6 +16,13 @@ from ohbin._platform import (
     os_tokens,
 )
 from ohbin._types import AssetEntry, ToolConfig
+
+if TYPE_CHECKING:
+    from tomlkit.items import Item, Key, Table
+
+    # One element of a tomlkit container body: a real key + item, or (None, item)
+    # for standalone whitespace/comment lines.
+    BodyEntry = tuple[Key | None, Item]
 
 # Asset filenames that are never the binary we want.
 _DENY_SUFFIXES = (
@@ -125,6 +133,40 @@ def resolve_tool(*, repo: str, version: str | None, binary: str | None) -> ToolC
     )
 
 
+def _deepest_last_table(table: Table) -> Table:
+    """Descend through the last sub-table at each level to the innermost one.
+
+    Standalone comments/blank lines between the end of a tool's last sub-table and
+    the next section header are parsed by tomlkit into *that* innermost sub-table's
+    body — so this is where trailing trivia lives and must be re-attached.
+    """
+    from tomlkit.items import Table
+
+    last_sub: Table | None = None
+    for _key, item in table.value.body:
+        if isinstance(item, Table):
+            last_sub = item
+    if last_sub is None:
+        return table
+    return _deepest_last_table(last_sub)
+
+
+def _detach_trailing_trivia(table: Table) -> list[BodyEntry]:
+    """Pop the trailing run of standalone whitespace/comments from a tool's last table.
+
+    Returns them in document order; an empty list when the table ends on a real key.
+    These belong to the *following* section (a comment block before the next header),
+    not the tool — overwriting the tool entry must not eat them.
+    """
+    from tomlkit.items import Comment, Whitespace
+
+    body = _deepest_last_table(table).value.body
+    trailing: list[BodyEntry] = []
+    while body and body[-1][0] is None and isinstance(body[-1][1], (Whitespace, Comment)):
+        trailing.insert(0, body.pop())
+    return trailing
+
+
 def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
     """Write/overwrite `[tool.ohbin.tools.<name>]`, preserving the rest of the file."""
     import tomlkit
@@ -147,6 +189,11 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
         super_table=True,
     )
 
+    # A comment block before the next section is parsed into the old entry's
+    # innermost body; capture it so the rebuilt entry doesn't drop it.
+    old_entry = tools.get(name)
+    trailing = _detach_trailing_trivia(old_entry) if isinstance(old_entry, Table) else []
+
     entry = tomlkit.table()
     entry["repo"] = cfg["repo"]
     entry["version"] = cfg["version"]
@@ -161,6 +208,8 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
     entry["assets"] = assets
 
     tools[name] = entry
+    if trailing:
+        _deepest_last_table(entry).value.body.extend(trailing)
     pyproject.write_text(tomlkit.dumps(doc))
 
 
