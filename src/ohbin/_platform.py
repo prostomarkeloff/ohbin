@@ -5,8 +5,10 @@ from __future__ import annotations
 import platform
 from typing import NamedTuple
 
+from ohbin._errors import OhbinError
 
-class UnsupportedPlatformError(RuntimeError):
+
+class UnsupportedPlatformError(OhbinError):
     """Raised when a tool declares no asset for the current OS/arch."""
 
 
