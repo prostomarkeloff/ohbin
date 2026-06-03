@@ -196,10 +196,19 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
         super_table=True,
     )
 
-    # A comment block before the next section is parsed into the old entry's
-    # innermost body; capture it so the rebuilt entry doesn't drop it.
+    # A comment block before the next top-level section is parsed into the
+    # innermost body of whichever tool is physically last in `[tool.ohbin.tools]`.
+    # Two cases must both preserve it:
+    #   - overwriting a tool: its own trailing trivia goes with the rebuilt entry;
+    #   - appending a new tool: tomlkit puts the new table *after* that trivia,
+    #     stranding the comment above the new entry and dropping the separator —
+    #     so detach it from the current last tool and move it past the new one.
     old_entry = tools.get(name)
-    trailing = _detach_trailing_trivia(old_entry) if isinstance(old_entry, Table) else []
+    own_trailing = _detach_trailing_trivia(old_entry) if isinstance(old_entry, Table) else []
+    appending = not isinstance(old_entry, Table)
+    next_section_trivia: list[BodyEntry] = []
+    if appending and _deepest_last_table(tools) is not tools:
+        next_section_trivia = _detach_trailing_trivia(tools)
 
     entry = tomlkit.table()
     entry["repo"] = cfg["repo"]
@@ -223,8 +232,10 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
     entry["assets"] = assets
 
     tools[name] = entry
-    if trailing:
-        _deepest_last_table(entry).value.body.extend(trailing)
+    if own_trailing:
+        _deepest_last_table(entry).value.body.extend(own_trailing)
+    if next_section_trivia:
+        _deepest_last_table(entry).value.body.extend(next_section_trivia)
     pyproject.write_text(tomlkit.dumps(doc))
 
 
