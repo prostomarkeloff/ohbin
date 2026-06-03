@@ -114,6 +114,22 @@ def sha256_of_url(url: str) -> str:
         tmp.unlink(missing_ok=True)
 
 
+def text_of_url(url: str) -> str:
+    """Download a URL to a temp file and return its decoded text.
+
+    Used to read a gist file (e.g. the `ohbin.json` index) from its `raw_url` when
+    GitHub truncates the inline `content` returned by the gists API.
+    """
+    fd, name = tempfile.mkstemp(prefix="ohbin-")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        _download(url, tmp)
+        return tmp.read_text()
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _verify(path: Path, expected_sha256: str) -> None:
     with path.open("rb") as fh:
         actual = _sha256_of(fh)

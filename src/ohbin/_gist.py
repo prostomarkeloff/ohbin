@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 from ohbin._add import local_pyproject, write_tool
 from ohbin._crypto import encrypt_binary
-from ohbin._engine import sha256_of_url
+from ohbin._engine import sha256_of_url, text_of_url
 from ohbin._errors import OhbinError
 from ohbin._platform import current_platform
 from ohbin._types import AssetEntry, ToolConfig
@@ -97,10 +97,18 @@ def _file_entry(files: dict[str, object], name: str) -> dict[str, object]:
 
 
 def _load_index(files: dict[str, object]) -> GistMeta:
-    raw = _file_entry(files, _OHBIN_INDEX).get("content")
-    if not isinstance(raw, str):
-        msg = f"{_OHBIN_INDEX} has no readable content"
-        raise GistError(msg)
+    entry = _file_entry(files, _OHBIN_INDEX)
+    raw = entry.get("content")
+    # GitHub truncates the inline `content` of *every* file in the gists API once
+    # any single file exceeds ~1MB — so a tiny index sitting next to a multi-MB
+    # encrypted blob comes back empty (`truncated: true`, `content: ""`). Fall back
+    # to the file's raw_url, which always serves the complete bytes.
+    if entry.get("truncated") or not isinstance(raw, str) or not raw:
+        raw_url = entry.get("raw_url")
+        if not isinstance(raw_url, str):
+            msg = f"{_OHBIN_INDEX} content is truncated and has no raw_url to fall back to"
+            raise GistError(msg)
+        raw = text_of_url(raw_url)
     meta: GistMeta = json.loads(raw)
     return meta
 
