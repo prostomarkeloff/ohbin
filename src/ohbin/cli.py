@@ -113,32 +113,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         type=Path,
         metavar="PATH",
-        help="manifest to read/write (default: nearest pyproject.toml with "
-        "[tool.ohbin], or $OHBIN_PYPROJECT)",
+        help="manifest to read/write (default: nearest pyproject.toml with [tool.ohbin], or $OHBIN_PYPROJECT)",
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_run = sub.add_parser(
-        "run", parents=[common], help="download (if needed) and exec a declared tool"
-    )
+    p_run = sub.add_parser("run", parents=[common], help="download (if needed) and exec a declared tool")
     p_run.add_argument("tool")
     p_run.add_argument("--password", default=None, help="decrypt password for an encrypted tool")
     p_run.add_argument("args", nargs=argparse.REMAINDER, help="args forwarded to the tool")
     p_run.set_defaults(func=_cmd_run)
 
-    p_add = sub.add_parser(
-        "add", parents=[common], help="resolve a GitHub release and write it into pyproject"
-    )
+    p_add = sub.add_parser("add", parents=[common], help="resolve a GitHub release and write it into pyproject")
     p_add.add_argument("repo", help="GitHub repo as owner/name")
     p_add.add_argument("--version", default=None, help="release version/tag (default: latest)")
     p_add.add_argument("--name", default=None, help="command name (default: repo name)")
     p_add.add_argument("--binary", default=None, help="binary name in archive (default: cmd name)")
     p_add.set_defaults(func=_cmd_add)
 
-    p_pub = sub.add_parser(
-        "publish-gist", help="encrypt a binary and upload it to a secret gist for one platform"
-    )
+    p_pub = sub.add_parser("publish-gist", help="encrypt a binary and upload it to a secret gist for one platform")
     p_pub.add_argument("path", help="path to the binary to encrypt + publish")
     p_pub.add_argument("--password", required=True, help="encryption password (keep it out of the gist)")
     p_pub.add_argument("--name", default=None, help="command name (default: binary filename)")
@@ -148,9 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_pub.add_argument("--desc", default=None, help="gist description")
     p_pub.set_defaults(func=_cmd_publish_gist)
 
-    p_addg = sub.add_parser(
-        "add-gist", parents=[common], help="resolve a published gist and write it into pyproject"
-    )
+    p_addg = sub.add_parser("add-gist", parents=[common], help="resolve a published gist and write it into pyproject")
     p_addg.add_argument("gist", help="gist id or url produced by publish-gist")
     p_addg.add_argument("--name", default=None, help="command name (default: from the gist index)")
     p_addg.add_argument(
@@ -160,9 +151,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_addg.set_defaults(func=_cmd_add_gist)
 
-    p_which = sub.add_parser(
-        "which", parents=[common], help="print the cached binary path (downloads if needed)"
-    )
+    p_which = sub.add_parser("which", parents=[common], help="print the cached binary path (downloads if needed)")
     p_which.add_argument("tool")
     p_which.add_argument("--password", default=None, help="decrypt password for an encrypted tool")
     p_which.set_defaults(func=_cmd_which)
