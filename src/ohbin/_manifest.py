@@ -7,10 +7,11 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from ohbin._errors import OhbinError
 from ohbin._types import AssetEntry, ToolConfig
 
 
-class ManifestError(RuntimeError):
+class ManifestError(OhbinError):
     """Raised when the manifest is missing or a tool entry is malformed."""
 
 
@@ -53,7 +54,10 @@ def _parse_asset(tool: str, key: str, raw: object) -> AssetEntry:
     if not isinstance(raw, dict) or "url" not in raw or "sha256" not in raw:
         msg = f"tool {tool!r}: asset {key!r} must define both 'url' and 'sha256'"
         raise ManifestError(msg)
-    return AssetEntry(url=str(raw["url"]), sha256=str(raw["sha256"]))
+    entry = AssetEntry(url=str(raw["url"]), sha256=str(raw["sha256"]))
+    if "binary_sha256" in raw:
+        entry["binary_sha256"] = str(raw["binary_sha256"])
+    return entry
 
 
 def _parse_tool(name: str, raw: object) -> ToolConfig:
@@ -69,12 +73,19 @@ def _parse_tool(name: str, raw: object) -> ToolConfig:
         msg = f"tool {name!r}: 'assets' must be a table"
         raise ManifestError(msg)
     assets = {str(k): _parse_asset(name, str(k), v) for k, v in raw_assets.items()}
-    return ToolConfig(
+    cfg = ToolConfig(
         repo=str(raw["repo"]),
         version=str(raw["version"]),
         binary=str(raw.get("binary", name)),
         assets=assets,
     )
+    if raw.get("encrypted"):
+        cfg["encrypted"] = True
+    if "password" in raw:
+        cfg["password"] = str(raw["password"])
+    if raw.get("password_committed_ok"):
+        cfg["password_committed_ok"] = True
+    return cfg
 
 
 def load_tools(pyproject: Path | None = None) -> dict[str, ToolConfig]:

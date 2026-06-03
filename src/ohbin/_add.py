@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ohbin._engine import sha256_of_url
+from ohbin._errors import OhbinError
 from ohbin._github import Asset, fetch_release
 from ohbin._platform import (
     ALL_ARCH_TOKENS,
@@ -44,7 +45,7 @@ _DENY_SUFFIXES = (
 )
 
 
-class AddError(RuntimeError):
+class AddError(OhbinError):
     """Raised when a release yields no usable assets, or pyproject can't be located."""
 
 
@@ -92,14 +93,20 @@ def _digest_sha256(asset: Asset) -> str | None:
     return None
 
 
-def _nearest_pyproject(start: Path | None = None) -> Path:
-    current = (start or Path.cwd()).resolve()
-    for directory in (current, *current.parents):
-        candidate = directory / "pyproject.toml"
-        if candidate.is_file():
-            return candidate
-    msg = "no pyproject.toml found from CWD upward"
-    raise AddError(msg)
+def local_pyproject(explicit: Path | None) -> Path:
+    """Resolve the pyproject to *write* to: an explicit `--pyproject-file`, else ./pyproject.toml.
+
+    Mutating commands never walk up the tree — that would let `ohbin add` from a
+    subdirectory silently edit a parent project's pyproject. Reading still discovers
+    upward (see `find_pyproject`); writing stays local and explicit.
+    """
+    if explicit is not None:
+        return explicit
+    local = Path("pyproject.toml")
+    if not local.is_file():
+        msg = "no pyproject.toml in the current directory (pass --pyproject-file to target one)"
+        raise AddError(msg)
+    return local
 
 
 def resolve_tool(*, repo: str, version: str | None, binary: str | None) -> ToolConfig:
@@ -198,12 +205,20 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
     entry["repo"] = cfg["repo"]
     entry["version"] = cfg["version"]
     entry["binary"] = cfg["binary"]
+    if cfg.get("encrypted"):
+        entry["encrypted"] = True
+    if "password" in cfg:
+        entry["password"] = cfg["password"]
+    if cfg.get("password_committed_ok"):
+        entry["password_committed_ok"] = True
 
     assets = tomlkit.table(is_super_table=True)
     for plat_key, asset in cfg["assets"].items():
         asset_table = tomlkit.table()
         asset_table["url"] = asset["url"]
         asset_table["sha256"] = asset["sha256"]
+        if "binary_sha256" in asset:
+            asset_table["binary_sha256"] = asset["binary_sha256"]
         assets[plat_key] = asset_table
     entry["assets"] = assets
 
@@ -223,6 +238,6 @@ def add_tool(
 ) -> tuple[str, Path]:
     cfg = resolve_tool(repo=repo, version=version, binary=binary)
     cmd_name = name or repo.split("/")[-1]
-    target = pyproject or _nearest_pyproject()
+    target = local_pyproject(pyproject)
     write_tool(target, cmd_name, cfg)
     return cmd_name, target

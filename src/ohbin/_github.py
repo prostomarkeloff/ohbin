@@ -17,13 +17,14 @@ import urllib.error
 import urllib.request
 from typing import Any, NamedTuple
 
+from ohbin._errors import OhbinError
 from ohbin._retry import retry, retryable_http_status
 
 _API = "https://api.github.com"
 _TIMEOUT = 30  # seconds per attempt
 
 
-class ReleaseNotFoundError(RuntimeError):
+class ReleaseNotFoundError(OhbinError):
     """Raised when no release matches the given repo/version (a real 404)."""
 
 

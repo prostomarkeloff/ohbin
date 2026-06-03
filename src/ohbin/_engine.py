@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
+from ohbin._crypto import decrypt_binary
+from ohbin._errors import OhbinError
 from ohbin._retry import retry, retryable_http_status
 
 if TYPE_CHECKING:
@@ -35,12 +37,16 @@ if TYPE_CHECKING:
 _DOWNLOAD_TIMEOUT = 60  # seconds per read/connect attempt
 
 
-class ChecksumMismatchError(RuntimeError):
+class ChecksumMismatchError(OhbinError):
     """Raised when a downloaded asset's SHA256 doesn't match the pinned value."""
 
 
-class BinaryNotFoundError(RuntimeError):
+class BinaryNotFoundError(OhbinError):
     """Raised when the expected binary isn't present inside a downloaded archive."""
+
+
+class MissingPasswordError(OhbinError):
+    """Raised when an encrypted tool is run without a password from --password or pyproject."""
 
 
 class _TransientDownloadError(RuntimeError):
@@ -162,6 +168,26 @@ def _place_raw(archive: Path, dest: Path) -> None:
         _finalize(staged, dest)
 
 
+def _decrypt_into(archive: Path, dest: Path, *, password: str | None, binary_sha256: str | None) -> None:
+    # The downloaded file is base64 text (gzip+AES blob); decrypt to the raw binary.
+    if not password:
+        msg = "encrypted tool requires a password (pass --password or set 'password' in pyproject)"
+        raise MissingPasswordError(msg)
+    binary = decrypt_binary(archive.read_text(), password)
+    if binary_sha256 is not None:
+        actual = hashlib.sha256(binary).hexdigest()
+        if actual != binary_sha256:
+            msg = (
+                f"decrypted binary checksum mismatch: expected {binary_sha256}, got {actual} "
+                "(wrong password or corrupt blob)"
+            )
+            raise ChecksumMismatchError(msg)
+    with tempfile.TemporaryDirectory(dir=str(dest.parent)) as staging:
+        staged = Path(staging) / dest.name
+        staged.write_bytes(binary)
+        _finalize(staged, dest)
+
+
 def _extract(archive: Path, binary: str, dest: Path) -> None:
     name = archive.name.lower()
     if name.endswith((".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar")):
@@ -172,8 +198,24 @@ def _extract(archive: Path, binary: str, dest: Path) -> None:
         _place_raw(archive, dest)
 
 
-def ensure_from(*, tool: str, version: str, binary: str, url: str, sha256: str) -> Path:
-    """Return the cached binary path, downloading + verifying it on first use."""
+def ensure_from(
+    *,
+    tool: str,
+    version: str,
+    binary: str,
+    url: str,
+    sha256: str,
+    encrypted: bool = False,
+    password: str | None = None,
+    binary_sha256: str | None = None,
+) -> Path:
+    """Return the cached binary path, downloading + verifying it on first use.
+
+    For encrypted tools the downloaded file is a base64 gzip+AES blob: `sha256`
+    verifies the ciphertext (tamper-evidence on the gist), then it's decrypted with
+    `password` and the plaintext checked against `binary_sha256`. The decrypted
+    binary is cached like any other — first run decrypts, the rest reuse it.
+    """
     cache = cache_root(tool, version)
     target = cache / binary
     if target.is_file() and os.access(target, os.X_OK):
@@ -188,7 +230,10 @@ def ensure_from(*, tool: str, version: str, binary: str, url: str, sha256: str) 
         try:
             _download(url, archive)
             _verify(archive, sha256)
-            _extract(archive, binary, target)
+            if encrypted:
+                _decrypt_into(archive, target, password=password, binary_sha256=binary_sha256)
+            else:
+                _extract(archive, binary, target)
         finally:
             archive.unlink(missing_ok=True)
 
