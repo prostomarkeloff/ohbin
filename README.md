@@ -101,12 +101,50 @@ uv run ohbin which fd                 # print the cached path (downloads if need
 uv run ohbin list                     # declared tools + resolved platforms
 ```
 
+Every command takes `--pyproject-file PATH` to target a specific manifest; reads otherwise discover the nearest `pyproject.toml` with `[tool.ohbin]` (or `$OHBIN_PYPROJECT`), while `add` / `add-gist` write only to the CWD's pyproject. Each run prints `[ohbin] resolved pyproject as <realpath>` so the target is never a guess.
+
 `run` replaces the process with `execv`, so the tool owns stdin/stdout, signals, and the exit code — drop-in for CI and Make, where the prefix disappears behind a variable:
 
 ```make
 RG := uv run ohbin run rg --
 search:; $(RG) TODO src/
 ```
+
+---
+
+## Private binaries — encrypted, through a gist
+
+`add` assumes the release is *public*. But you have a tool you built yourself and don't want on a public repo — a closed-source linter, a vendored binary, an internal CLI. You still want `ohbin run` to just work.
+
+The answer is a **secret gist** carrying the binary **encrypted with a password**. The gist link is link-gated (unlisted, not searchable); the password lives only in a private repo. A leaked link alone is useless — the bytes are AES garbage without the key, and ohbin is what decrypts them. No TTL, no key server: to revoke, delete the gist or rotate the password.
+
+```console
+$ uv run ohbin publish-gist ./dist/mytool --password "$PW"
+published mytool (current platform) to https://gist.github.com/you/ab12…
+add it with:  uv run ohbin add-gist https://gist.github.com/you/ab12…
+```
+
+`publish-gist` gzips the binary, encrypts it (`openssl` AES-256-CBC, PBKDF2 / 200k iters), base64s the ciphertext into one gist file per platform, and writes an `ohbin.json` index next to them. Publish each platform from its own machine — pass `--gist <id>` to add to the same gist:
+
+```bash
+uv run ohbin publish-gist ./dist/mytool-linux --password "$PW" --platform linux-x86_64 --gist ab12…
+```
+
+`add-gist` reads the index, pins each blob's immutable `raw_url` + ciphertext SHA256, and writes an `encrypted = true` tool into pyproject:
+
+```console
+$ uv run ohbin add-gist https://gist.github.com/you/ab12… --name mytool
+wrote [tool.ohbin.tools.mytool] (encrypted) to pyproject.toml
+run it with:  uv run ohbin run --password <pw> mytool -- <args>
+```
+
+At run time the password comes from `--password` (before the tool name — args after it forward to the tool), or from a `password` field in the manifest. `run` verifies the downloaded ciphertext SHA, decrypts, checks the *plaintext* SHA (a wrong password is caught cleanly, not as a crash), then caches and execs like any other tool:
+
+```bash
+uv run ohbin run --password "$PW" mytool -- --help
+```
+
+> Needs the `gh` CLI (reuses your auth) and `openssl` on PATH. The password never touches argv — it's piped to `openssl` via a file descriptor. Store it with `add-gist --password` only if committing it is acceptable; otherwise pass `--password` at run time.
 
 ---
 
@@ -189,7 +227,7 @@ git clone https://github.com/prostomarkeloff/ohbin
 cd ohbin && uv sync
 
 make lint-heavy     # ruff format + ruff check --fix + pyright
-make test-full      # 44 network-free tests (platform / matching / manifest / engine / retry)
+make test-full      # 68 network-free tests (platform / matching / manifest / engine / crypto / gist / retry)
 ```
 
 CI runs the lint once, then an `os: [ubuntu, macos, windows] × python: [3.11, 3.12, 3.13, 3.14]` matrix.

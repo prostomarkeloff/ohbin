@@ -19,7 +19,7 @@ _INDEX = {
 
 
 def test_load_index_reads_inline_content() -> None:
-    files = {"ohbin.json": {"content": json.dumps(_INDEX), "truncated": False}}
+    files: dict[str, object] = {"ohbin.json": {"content": json.dumps(_INDEX), "truncated": False}}
     assert _load_index(files)["name"] == "dbmap"
 
 
@@ -33,12 +33,14 @@ def test_load_index_falls_back_to_raw_url_when_truncated(monkeypatch: pytest.Mon
         return json.dumps(_INDEX)
 
     monkeypatch.setattr(_gist, "text_of_url", fake_fetch)
-    files = {"ohbin.json": {"content": "", "truncated": True, "raw_url": "https://gist/raw/ohbin.json"}}
+    files: dict[str, object] = {
+        "ohbin.json": {"content": "", "truncated": True, "raw_url": "https://gist/raw/ohbin.json"}
+    }
     assert _load_index(files)["name"] == "dbmap"
     assert fetched == ["https://gist/raw/ohbin.json"]
 
 
 def test_load_index_truncated_without_raw_url_errors() -> None:
-    files = {"ohbin.json": {"content": "", "truncated": True}}
+    files: dict[str, object] = {"ohbin.json": {"content": "", "truncated": True}}
     with pytest.raises(GistError, match="raw_url"):
         _load_index(files)
