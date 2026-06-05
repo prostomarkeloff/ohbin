@@ -1,243 +1,148 @@
-<div align="center">
-
 # ohbin
-
-**Declare binaries, not wrapper packages.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Types: pyright](https://img.shields.io/badge/types-pyright-blue)](https://github.com/microsoft/pyright)
-[![Lint: ruff](https://img.shields.io/badge/lint-ruff-orange.svg)](https://github.com/astral-sh/ruff)
 
-</div>
+ohbin runs the binaries your project needs but can't `pip install`. You know the ones:
+`ripgrep`, `oasdiff`, some linter written in Rust that only ships as a GitHub release. uv
+installs Python packages, and those aren't Python packages, so normally you're stuck either
+telling everyone to install them by hand and watching the versions drift, or writing a little
+download-and-verify wrapper package and copying it into every repo.
 
-Your project needs `ripgrep`, or `oasdiff`, or some Rust linter that ships only as a GitHub release. Python can't install it. So you either tell every developer "go install it yourself" — and watch versions drift and CI break — or you hand-write a download-and-verify wrapper package, and copy it into every repo, for every tool.
+With ohbin you just write the tool down in your `pyproject.toml`. The first time you run it,
+ohbin downloads it, checks it against a SHA256 you pinned, caches it, and runs it. One
+dev-dependency, as many tools as you want.
 
-`ohbin` deletes that. Declare the tool in `pyproject.toml`; it's fetched on first use, SHA256-checked against a pinned hash, cached per host, and exec'd. One dev-dependency. Any number of tools.
+It's a small thing on purpose, built for people who already live in uv. Your binaries get
+pinned right next to your Python deps, in the same file, and run through the same flow.
 
-```bash
+What it gives you:
+
+* binaries pinned to a version, pulled from GitHub releases
+* a SHA256 per platform, checked before anything gets unpacked
+* one dev-dependency, however many tools you declare
+* a per-host cache that's safe to hit from parallel CI
+* mostly stdlib (it shells out to `gh` and `openssl` only for the private-gist part)
+
+## Installation
+
+It's a dev dependency, so with uv:
+
+```sh
 uv add --dev git+https://github.com/prostomarkeloff/ohbin.git
 ```
 
----
+## How to?
 
-## Before & After
+Say you want ripgrep. Point ohbin at the repo:
 
-**❌ The hand-rolled wrapper — a whole package, per tool, copied into every repo**
-
-```python
-# a download-and-verify wrapper · ~180 lines · written again for the next tool
-_PLATFORM_ASSETS = {
-    ("linux",  "x86_64"): _Asset("ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz", "4cf9f2741e6c…"),
-    ("darwin", "arm64"):  _Asset("ripgrep-14.1.1-aarch64-apple-darwin.tar.gz",      "24ad767777…"),
-    # ...two more, each SHA hand-copied from the release page
-}
-
-def ensure_binary() -> Path:
-    asset = _resolve_asset()                      # platform.machine() guesswork
-    with _flock(cache / ".lock"):                 # concurrency, if you bother
-        _download(url, archive)                   # urllib + redirects (+ retries, if you bother)
-        _verify_checksum(archive, asset.sha256)   # hashlib
-        _extract(archive, binary)                 # tarfile, atomic rename
-    return binary
-# + a wheel shim, [project.scripts], and a [tool.uv.sources] entry — in every repo
-```
-
-**✅ ohbin — one dev-dependency, one table per tool**
-
-```bash
+```sh
 uv run ohbin add BurntSushi/ripgrep --version 14.1.1 --name rg --binary rg
 ```
+
+This goes and looks at the release, finds the right asset for each platform, pins the SHA256s,
+and writes a little table into your `pyproject.toml`. Your comments and formatting stay where
+they are:
 
 ```toml
 [tool.ohbin.tools.rg]
 repo = "BurntSushi/ripgrep"
 version = "14.1.1"
 binary = "rg"
-# + one [..assets.<os>-<arch>] table per platform — written by `add`, checksums and all
+# add writes one [..assets.<os>-<arch>] table per platform under here, checksums and all
 ```
 
-```bash
-uv run ohbin run rg -- TODO src/
+`--name` is what you'll type when it's different from the repo name (ripgrep becomes rg), and
+`--binary` is the actual executable inside the archive. If add guesses an asset wrong, don't
+fight it, the table is the source of truth, just fix the line.
+
+Then run it:
+
+```sh
+uv run ohbin run rg -- --files     # first time: downloads, checks, caches, runs
+uv run ohbin run rg -- TODO src/   # after that it just runs
 ```
 
-One is **a package you maintain**. The other is **a table you declare**.
-
----
-
-## Why a wrapper at all?
-
-uv can't install an arbitrary GitHub-release binary — and that's not an oversight. `uv run <name>` resolves to a Python console-script entry point, which is *static wheel metadata* baked at build time. There is no hook that reads a config table and conjures a command. So *something* has to bridge "a binary on a release page" to "a command in your venv."
-
-The honest choices are **(a)** a wrapper package per tool — the duplication above — or **(b)** one generic engine that reads a manifest. `ohbin` is (b): the per-tool detail (repo, version, per-platform asset + checksum) lives in `[tool.ohbin.tools.*]`, and a single mostly-stdlib engine does download / verify / cache / exec for all of them.
-
----
-
-## `ohbin add` does the boring part
-
-Point it at a repo. It resolves the release, matches one asset per platform, pins each SHA256 (from the GitHub API `digest`, else by downloading and hashing), and writes it into your pyproject — comments and formatting intact, via `tomlkit`:
-
-```console
-$ uv run ohbin add BurntSushi/ripgrep --version 14.1.1 --name rg --binary rg
-resolving BurntSushi/ripgrep@14.1.1 ...
-  + linux-x86_64    ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz   (downloaded+hashed)
-  + linux-aarch64   ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz   (downloaded+hashed)
-  + darwin-x86_64   ripgrep-14.1.1-x86_64-apple-darwin.tar.gz         (downloaded+hashed)
-  + darwin-arm64    ripgrep-14.1.1-aarch64-apple-darwin.tar.gz        (downloaded+hashed)
-
-wrote [tool.ohbin.tools.rg] to pyproject.toml
-```
-
-`--name` sets the command when it differs from the repo (`ripgrep` → `rg`); `--binary` sets the executable's name inside the archive. Odd naming scheme? The manifest is the source of truth — `add` just fills it; fix an entry by hand. Uses the `gh` CLI when present (auth, rate limits), else the public REST API (`GH_TOKEN` / `GITHUB_TOKEN` honored).
-
----
-
-## `ohbin run` does the rest
-
-```bash
-uv run ohbin run rg -- --files       # first run: download → verify → cache → exec
-uv run ohbin run rg -- TODO src/     # next runs: straight to exec
-uv run ohbin which fd                 # print the cached path (downloads if needed)
-uv run ohbin list                     # declared tools + resolved platforms
-```
-
-Every command takes `--pyproject-file PATH` to target a specific manifest; reads otherwise discover the nearest `pyproject.toml` with `[tool.ohbin]` (or `$OHBIN_PYPROJECT`), while `add` / `add-gist` write only to the CWD's pyproject. Each run prints `[ohbin] resolved pyproject as <realpath>` so the target is never a guess.
-
-`run` replaces the process with `execv`, so the tool owns stdin/stdout, signals, and the exit code — drop-in for CI and Make, where the prefix disappears behind a variable:
+ohbin hands the process straight over with execv, so the tool itself gets stdin, stdout,
+signals and the exit code, exactly like you'd run it yourself. In a Makefile I usually hide
+the prefix behind a variable:
 
 ```make
 RG := uv run ohbin run rg --
 search:; $(RG) TODO src/
 ```
 
----
+`ohbin which fd` prints the cached path (and downloads it first if it has to), and `ohbin list`
+shows what you've declared.
 
-## Private binaries — encrypted, through a gist
+### Private binaries
 
-`add` assumes the release is *public*. But you have a tool you built yourself and don't want on a public repo — a closed-source linter, a vendored binary, an internal CLI. You still want `ohbin run` to just work.
+Sometimes the binary isn't on a public release page. Maybe you built it yourself and you don't
+want it in a repo at all. ohbin can ship it through a secret gist instead, encrypted with a
+password:
 
-The answer is a **secret gist** carrying the binary **encrypted with a password**. The gist link is link-gated (unlisted, not searchable); the password lives only in a private repo. A leaked link alone is useless — the bytes are AES garbage without the key, and ohbin is what decrypts them. No TTL, no key server: to revoke, delete the gist or rotate the password.
-
-```console
-$ uv run ohbin publish-gist ./dist/mytool --password "$PW"
-published mytool (current platform) to https://gist.github.com/you/ab12…
-add it with:  uv run ohbin add-gist https://gist.github.com/you/ab12…
+```sh
+uv run ohbin publish-gist ./dist/mytool --password "$PW"
 ```
 
-`publish-gist` gzips the binary, encrypts it (`openssl` AES-256-CBC, PBKDF2 / 200k iters), base64s the ciphertext into one gist file per platform, and writes an `ohbin.json` index next to them. Publish each platform from its own machine — pass `--gist <id>` to add to the same gist:
+That gzips it, encrypts it, and drops one gist file per platform plus a small index. Run it
+from each platform's own machine, passing `--gist <id>` to add to the same gist. After that
+it's just another tool:
 
-```bash
-uv run ohbin publish-gist ./dist/mytool-linux --password "$PW" --platform linux-x86_64 --gist ab12…
-```
-
-`add-gist` reads the index, pins each blob's immutable `raw_url` + ciphertext SHA256, and writes an `encrypted = true` tool into pyproject:
-
-```console
-$ uv run ohbin add-gist https://gist.github.com/you/ab12… --name mytool
-wrote [tool.ohbin.tools.mytool] (encrypted) to pyproject.toml
-run it with:  uv run ohbin run --password <pw> mytool -- <args>
-```
-
-At run time the password comes from `--password` (before the tool name — args after it forward to the tool), or from a `password` field in the manifest. `run` verifies the downloaded ciphertext SHA, decrypts, checks the *plaintext* SHA (a wrong password is caught cleanly, not as a crash), then caches and execs like any other tool:
-
-```bash
+```sh
+uv run ohbin add-gist https://gist.github.com/you/ab12… --name mytool
 uv run ohbin run --password "$PW" mytool -- --help
 ```
 
-> Needs the `gh` CLI (reuses your auth) and `openssl` on PATH. The password never touches argv — it's piped to `openssl` via a file descriptor. Store it with `add-gist --password` only if committing it is acceptable; otherwise pass `--password` at run time.
+Why a gist and not a private repo? Because a gist isn't tied to a repo, and that's the whole
+point. You don't commit the binary anywhere, you don't hand out repo access and tokens to
+everyone who needs it, you just give them a link and a password. The link is unlisted and the
+bytes are AES-256-CBC, so a leaked link on its own is nothing without the password. The
+password goes to openssl over a file descriptor, never on the command line. To take access
+away, delete the gist or change the password.
 
----
+### From Python
 
-## How it works
-
-```
-ohbin run rg -- --version
-   │
-   ├─ read [tool.ohbin.tools.rg]                  _manifest   (walks up to your pyproject)
-   ├─ pick the asset for this os/arch             _platform   (→ darwin-arm64)
-   │
-   ├─ cached?  ~/.cache/ohbin/rg/14.1.1/rg
-   │    ├─ yes ───────────────────────────────┐
-   │    └─ no → flock → download → SHA256 ✓    │   _engine
-   │              → extract (tar/zip/raw) → +x │
-   ▼                                            ▼
-  os.execv(binary, ["rg", "--version"])  ◄──────┘
-```
-
-- **Cache** — `$XDG_CACHE_HOME/ohbin/<tool>/<version>/<binary>` (`~/.cache/…` default). The version is in the path, so a bump is a clean new download that never collides with the old one.
-- **Concurrency** — the first caller downloads under a `flock`; the rest wait and reuse. Safe under xdist / parallel CI.
-- **Integrity** — SHA256-checked *before* extraction. A mismatch aborts; nothing partial lands in the cache.
-
----
-
-## It survives the network
-
-Release assets live behind CDNs that hiccup; `gh` rate-limits; DNS blips mid-clone. Every release lookup and every download retries with exponential backoff — and a real **404 is never mistaken for a transient failure** (the bug that makes naive wrappers cry "release not found" on a dropped packet):
-
-```console
-$ uv run ohbin add BurntSushi/ripgrep --version 14.1.1
-ohbin: download failed (attempt 1/4): … Connection reset by peer; retrying in 0.5s
-  + linux-x86_64    ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz   (downloaded+hashed)
-  …
-```
-
-That is a real line from a live run — a reset connection, recovered, no fuss.
-
----
-
-## In-process
-
-Need the binary's *path*, not to exec it? Same manifest, one call:
+If you want the path instead of running the thing:
 
 ```python
 from ohbin import ensure
 
-path = ensure("rg")   # -> pathlib.Path, downloaded + verified on first use
+path = ensure("rg")   # a Path, downloaded and checked the first time
 ```
 
-Discovery walks up from CWD to the nearest `pyproject.toml` carrying `[tool.ohbin]`; set `OHBIN_PYPROJECT` to point at a specific file (CI, or callers running from an unrelated directory).
+It finds your `pyproject.toml` by walking up from wherever you are. Set `OHBIN_PYPROJECT` if
+you need to point it at a specific file, like in CI.
 
----
+## How it works
 
-## Hand-rolled wrapper vs `ohbin`
-
-| | wrapper package per tool | `ohbin` |
-|---|---|---|
-| Packages to maintain | one per tool | one, total |
-| New tool | write a new package | `ohbin add` |
-| New repo | copy the files | one dev-dependency |
-| Checksums | hand-pinned from the release page | auto-pinned by `add` |
-| Network resilience | re-implemented (or skipped) | retry + backoff, built in |
-| Integrity check | re-implemented per wrapper | shared, SHA256 |
-
----
+Nothing clever. On `ohbin run rg`, it reads the rg table, works out your os and arch, and looks
+for `~/.cache/ohbin/rg/14.1.1/rg`. If it's there, it runs it. If not, it downloads under a lock
+(so two parallel runs don't race), checks the SHA256 before unpacking anything, extracts, and
+runs. The version is in the cache path, so bumping it is just a fresh download that doesn't step
+on the old one. Downloads retry with backoff, and a real 404 doesn't get mistaken for a flaky
+network.
 
 ## Limitations
 
-- **POSIX only.** The install lock is `fcntl.flock`; the engine imports `fcntl` at the top, so Windows fails on import.
-- **Four platforms.** linux/darwin × x86_64/arm64 are what `add` auto-resolves. Others (windows, musl, riscv) you add by hand — the engine runs them fine.
-- **Heuristic matching.** `add` matches assets by OS/arch tokens in the filename and prefers `.tar.gz`. The manifest is the source of truth; an unusual scheme is a one-line fix.
-
----
+POSIX only for now, the locking uses `fcntl` so it won't even import on Windows. add
+auto-resolves four platforms (linux and macOS, x86_64 and arm64); anything else (windows, musl,
+riscv) you add to the table by hand and the engine runs it fine. Asset matching is just looking
+at the os/arch words in the filename and preferring `.tar.gz`, so a weird naming scheme might
+cost you a one-line fix.
 
 ## Development
 
-```bash
+```sh
 git clone https://github.com/prostomarkeloff/ohbin
 cd ohbin && uv sync
 
-make lint-heavy     # ruff format + ruff check --fix + pyright
-make test-full      # 68 network-free tests (platform / matching / manifest / engine / crypto / gist / retry)
+make lint-heavy   # ruff format + check + pyright
+make test-full    # the network-free test suite
 ```
 
-CI runs the lint once, then an `os: [ubuntu, macos, windows] × python: [3.11, 3.12, 3.13, 3.14]` matrix.
+## License
 
----
+MIT, see [LICENSE](LICENSE).
 
-<div align="center">
-
-**Stop copying wrapper packages. Start declaring binaries.**
-
-Made with 📦 by [@prostomarkeloff](https://github.com/prostomarkeloff)
-
-</div>
+Made with 📦 by [prostomarkeloff](https://github.com/prostomarkeloff) and contributors.
