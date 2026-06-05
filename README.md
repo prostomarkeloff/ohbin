@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ohbin runs the binaries your project needs but can't `pip install`. You know the ones:
-`ripgrep` ([or… can you?](https://pypi.org/project/ripgrep/)), `oasdiff`, some linter
+`ripgrep` ([or… can you?](https://pypi.org/project/ripgrep/)), [`find-dup-defs`](https://github.com/prostomarkeloff/find-dup-defs), [`oasdiff`](https://github.com/oasdiff/oasdiff), some linter
 written in Rust that only ships as a GitHub release. uv
 installs Python packages, and those aren't Python packages, so normally you're stuck either
 telling everyone to install them by hand and watching the versions drift, or writing a little
