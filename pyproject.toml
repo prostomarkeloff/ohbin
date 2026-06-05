@@ -6,6 +6,8 @@ readme = "README.md"
 authors = [
     { name = "prostomarkeloff", email = "prostomarkeloff@ohreally.me" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # Hot path (`run` / `ensure`) is pure stdlib. tomlkit is only imported by `add`,
 # which edits pyproject.toml and must preserve its comments/formatting.
