@@ -30,7 +30,7 @@ What it gives you:
 It's a dev dependency, so with uv:
 
 ```sh
-uv add --dev git+https://github.com/prostomarkeloff/ohbin.git
+uv add --dev ohbin
 ```
 
 ## How to?
