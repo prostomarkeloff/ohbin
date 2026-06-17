@@ -131,3 +131,96 @@ def test_overwrite_tolerates_varied_trailing_whitespace(tmp_path: Path, trailing
 
     write_tool(pp, "foo", _cfg("0.2.0"))
     assert load_tool("foo", pyproject=pp)["version"] == "0.2.0"
+
+
+def _enc_cfg(version: str, plats: tuple[str, ...] = ("darwin-arm64", "linux-x86_64")) -> ToolConfig:
+    # Encrypted (gist-style) cfg: per-platform ciphertext + decrypted-binary hash.
+    return ToolConfig(
+        repo="gist:abc123",
+        version=version,
+        binary="dbmap",
+        encrypted=True,
+        password="pw",
+        assets={
+            plat: AssetEntry(
+                url=f"https://gist/{version}/{plat}.enc.b64",
+                sha256=f"sha-{version}-{plat}",
+                binary_sha256=f"bin-{version}-{plat}",
+            )
+            for plat in plats
+        },
+    )
+
+
+_DBMAP_PYPROJECT = (
+    "[tool.ohbin.tools.dbmap]\n"
+    'repo = "gist:abc123"\n'
+    'version = "gist-old"\n'
+    'binary = "dbmap"\n'
+    "encrypted = true\n"
+    'password = "pw"\n'
+    "# Password intentionally committed: secret gist, dev tool — not a secret.\n"
+    "password_committed_ok = true\n"
+    "\n"
+    "[tool.ohbin.tools.dbmap.assets.darwin-arm64]\n"
+    'url = "https://gist/old/darwin-arm64.enc.b64"\n'
+    'sha256 = "sha-gist-old-darwin-arm64"\n'
+    'binary_sha256 = "bin-gist-old-darwin-arm64"\n'
+    "\n"
+    "[tool.ohbin.tools.dbmap.assets.linux-x86_64]\n"
+    'url = "https://gist/old/linux-x86_64.enc.b64"\n'
+    'sha256 = "sha-gist-old-linux-x86_64"\n'
+    'binary_sha256 = "bin-gist-old-linux-x86_64"\n'
+    "\n"
+    "# flowmap — a sibling tool; this comment belongs to it.\n"
+    "[tool.ohbin.tools.flowmap]\n"
+    'repo = "gist:def456"\n'
+    'version = "gist-fm"\n'
+    'binary = "flowmap"\n'
+)
+
+
+def test_overwrite_preserves_interior_comment_and_user_key(tmp_path: Path) -> None:
+    # Re-publishing an encrypted gist tool (same platform set, new version + hashes)
+    # must not eat a user-authored key (`password_committed_ok`), its leading
+    # comment, or the blank-line layout before the following section — the
+    # regression behind the dbmap re-publish.
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(_DBMAP_PYPROJECT)
+
+    write_tool(pp, "dbmap", _enc_cfg("gist-new"))
+    out = pp.read_text()
+
+    tool = load_tool("dbmap", pyproject=pp)
+    # User-authored key + its leading comment survive untouched.
+    assert tool.get("password_committed_ok") is True
+    assert "# Password intentionally committed: secret gist, dev tool — not a secret." in out
+    # The generated fields were actually refreshed.
+    assert tool["version"] == "gist-new"
+    assert "gist-old" not in out
+    assert tool["assets"]["darwin-arm64"].get("binary_sha256") == "bin-gist-new-darwin-arm64"
+    assert "bin-gist-old-darwin-arm64" not in out
+    # The sibling's comment still sits directly above its header — no stray blank
+    # line injected between them — and the sibling tool is intact.
+    assert "# flowmap — a sibling tool; this comment belongs to it.\n[tool.ohbin.tools.flowmap]" in out
+    assert load_tool("flowmap", pyproject=pp)["version"] == "gist-fm"
+    # No blank line was injected where there wasn't one (no doubled blank lines).
+    assert "\n\n\n" not in out
+
+
+def test_overwrite_with_changed_platforms_keeps_user_key(tmp_path: Path) -> None:
+    # Even when the platform set changes (rebuild path), the user-authored key and
+    # the following section's comment must be preserved.
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text(_DBMAP_PYPROJECT)
+
+    write_tool(pp, "dbmap", _enc_cfg("gist-new", plats=("darwin-arm64", "darwin-x86_64", "linux-x86_64")))
+    out = pp.read_text()
+
+    tool = load_tool("dbmap", pyproject=pp)
+    assert tool.get("password_committed_ok") is True
+    assert "# Password intentionally committed: secret gist, dev tool — not a secret." in out
+    assert set(tool["assets"]) == {"darwin-arm64", "darwin-x86_64", "linux-x86_64"}
+    assert "# flowmap — a sibling tool; this comment belongs to it." in out
+    assert load_tool("flowmap", pyproject=pp)["version"] == "gist-fm"
+    assert "\n\n\n" not in out

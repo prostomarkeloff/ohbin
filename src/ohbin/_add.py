@@ -174,8 +174,121 @@ def _detach_trailing_trivia(table: Table) -> list[BodyEntry]:
     return trailing
 
 
+def _set_asset_fields(sub: Table, asset: AssetEntry) -> None:
+    """Set url/sha256/binary_sha256 on one asset sub-table, in place."""
+    sub["url"] = asset["url"]
+    sub["sha256"] = asset["sha256"]
+    if "binary_sha256" in asset:
+        sub["binary_sha256"] = asset["binary_sha256"]
+    elif "binary_sha256" in sub:
+        del sub["binary_sha256"]
+
+
+def _build_assets_table(cfg_assets: dict[str, AssetEntry]) -> Table:
+    """A fresh `[...assets.<plat>]` super-table from a resolved asset map."""
+    import tomlkit
+
+    assets = tomlkit.table(is_super_table=True)
+    for plat_key, asset in cfg_assets.items():
+        sub = tomlkit.table()
+        _set_asset_fields(sub, asset)
+        assets[plat_key] = sub
+    return assets
+
+
+def _set_generated_fields(entry: Table, cfg: ToolConfig) -> None:
+    """Write the fields ohbin owns: repo / version / binary / encrypted / password.
+
+    Assigning an existing key updates its value in place — position and any attached
+    comment are kept — so user-authored keys ohbin doesn't generate (e.g.
+    `password_committed_ok`) are never touched here. `password` is only written when
+    the caller supplied one (omitting it lets a manually-set password survive).
+    """
+    entry["repo"] = cfg["repo"]
+    entry["version"] = cfg["version"]
+    entry["binary"] = cfg["binary"]
+    if cfg.get("encrypted"):
+        entry["encrypted"] = True
+    if "password" in cfg:
+        entry["password"] = cfg["password"]
+
+
+def _update_assets_in_place(entry: Table, cfg_assets: dict[str, AssetEntry]) -> None:
+    """Refresh a tool's asset sub-tables without disturbing surrounding trivia.
+
+    Same platform set (the common re-publish): update each sub-table's values in
+    place — nothing structural moves, so the comment block that belongs to the next
+    section (which tomlkit parses into the last asset's body) stays put. If the set
+    or order changed, detach that trailing block, rebuild the sub-tables, then
+    re-attach it to the new last asset so it still precedes the next section.
+    """
+    import tomlkit
+    from tomlkit.items import Table
+
+    existing = entry.get("assets")
+    if not isinstance(existing, Table):
+        entry["assets"] = _build_assets_table(cfg_assets)
+        return
+    if list(existing.keys()) == list(cfg_assets.keys()):
+        for plat, asset in cfg_assets.items():
+            _set_asset_fields(existing[plat], asset)
+        return
+    # Set/order changed. Reconcile rather than empty-and-rebuild: deleting the
+    # first sub-table perturbs the leading blank line before the assets block, so
+    # keep the platforms that survive (update in place), drop the gone ones, and
+    # append the new ones. The trailing comment block lives in the current last
+    # asset's body — detach it first so a removed-or-shifted last asset can't strand
+    # it, then re-attach it to whatever asset ends up last.
+    trailing = _detach_trailing_trivia(entry)
+    for plat in list(existing.keys()):
+        if plat not in cfg_assets:
+            del existing[plat]
+    for plat, asset in cfg_assets.items():
+        sub = existing.get(plat)
+        if isinstance(sub, Table):
+            _set_asset_fields(sub, asset)
+        else:
+            sub = tomlkit.table()
+            _set_asset_fields(sub, asset)
+            existing[plat] = sub
+    if trailing:
+        _deepest_last_table(entry).value.body.extend(trailing)
+
+
+def _append_new_tool(tools: Table, name: str, cfg: ToolConfig) -> None:
+    """Append a brand-new tool entry, keeping any following section's comment block.
+
+    A comment block before the next top-level section is parsed into the innermost
+    body of whichever tool is physically last in `[tool.ohbin.tools]`. tomlkit would
+    place the new table *after* that trivia — stranding the comment above the new
+    entry and dropping the separator — so detach it and move it past the new entry.
+    """
+    import tomlkit
+
+    next_section_trivia: list[BodyEntry] = []
+    if _deepest_last_table(tools) is not tools:
+        next_section_trivia = _detach_trailing_trivia(tools)
+
+    entry = tomlkit.table()
+    _set_generated_fields(entry, cfg)
+    if cfg.get("password_committed_ok"):
+        entry["password_committed_ok"] = True
+    entry["assets"] = _build_assets_table(cfg["assets"])
+
+    tools[name] = entry
+    if next_section_trivia:
+        _deepest_last_table(entry).value.body.extend(next_section_trivia)
+
+
 def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
-    """Write/overwrite `[tool.ohbin.tools.<name>]`, preserving the rest of the file."""
+    """Write/overwrite `[tool.ohbin.tools.<name>]`, preserving the rest of the file.
+
+    Overwriting an existing tool mutates it *in place*: only the ohbin-generated
+    fields and asset hashes change, so interior comments and user-authored keys
+    (e.g. `password_committed_ok`) survive untouched. Appending a new tool builds a
+    fresh table and moves any following comment block (which tomlkit parses into the
+    last existing tool's body) past the new entry.
+    """
     import tomlkit
     from tomlkit import TOMLDocument
     from tomlkit.items import Table
@@ -196,46 +309,13 @@ def write_tool(pyproject: Path, name: str, cfg: ToolConfig) -> None:
         super_table=True,
     )
 
-    # A comment block before the next top-level section is parsed into the
-    # innermost body of whichever tool is physically last in `[tool.ohbin.tools]`.
-    # Two cases must both preserve it:
-    #   - overwriting a tool: its own trailing trivia goes with the rebuilt entry;
-    #   - appending a new tool: tomlkit puts the new table *after* that trivia,
-    #     stranding the comment above the new entry and dropping the separator —
-    #     so detach it from the current last tool and move it past the new one.
     old_entry = tools.get(name)
-    own_trailing = _detach_trailing_trivia(old_entry) if isinstance(old_entry, Table) else []
-    appending = not isinstance(old_entry, Table)
-    next_section_trivia: list[BodyEntry] = []
-    if appending and _deepest_last_table(tools) is not tools:
-        next_section_trivia = _detach_trailing_trivia(tools)
+    if isinstance(old_entry, Table):
+        _set_generated_fields(old_entry, cfg)
+        _update_assets_in_place(old_entry, cfg["assets"])
+    else:
+        _append_new_tool(tools, name, cfg)
 
-    entry = tomlkit.table()
-    entry["repo"] = cfg["repo"]
-    entry["version"] = cfg["version"]
-    entry["binary"] = cfg["binary"]
-    if cfg.get("encrypted"):
-        entry["encrypted"] = True
-    if "password" in cfg:
-        entry["password"] = cfg["password"]
-    if cfg.get("password_committed_ok"):
-        entry["password_committed_ok"] = True
-
-    assets = tomlkit.table(is_super_table=True)
-    for plat_key, asset in cfg["assets"].items():
-        asset_table = tomlkit.table()
-        asset_table["url"] = asset["url"]
-        asset_table["sha256"] = asset["sha256"]
-        if "binary_sha256" in asset:
-            asset_table["binary_sha256"] = asset["binary_sha256"]
-        assets[plat_key] = asset_table
-    entry["assets"] = assets
-
-    tools[name] = entry
-    if own_trailing:
-        _deepest_last_table(entry).value.body.extend(own_trailing)
-    if next_section_trivia:
-        _deepest_last_table(entry).value.body.extend(next_section_trivia)
     pyproject.write_text(tomlkit.dumps(doc))
 
 
